@@ -68,8 +68,4 @@ export async function viewDashboard() {
   return html;
 }
 
-window.__newCompany = async () => {
-  const name = prompt('New company name:');
-  if (!name) return;
-  try { await api('/companies', { method:'POST', body: { name } }); toast('Company created'); navigate('dashboard'); } catch(e){ toast(e.message, true); }
-};
+window.__newCompany = () => navigate('companies');

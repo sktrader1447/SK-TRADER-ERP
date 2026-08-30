@@ -1,5 +1,8 @@
 import { api, state, fmtMoney, fmtDate, esc, can } from './api.js';
 import { navigate, toast } from './app.js';
+import { CUSTOMER_CATEGORIES } from './companies.js';
+
+const CATS = ['', ...CUSTOMER_CATEGORIES];
 
 export async function viewCustomers() {
   const custs = await api('/customers' + (state.company_id ? `?company_id=${state.company_id}` : ''));
@@ -47,9 +50,9 @@ async function customerForm(id, bookers, companies) {
       <div class="field"><label>Name *</label><input id="cu_name" value="${c?esc(c.name):''}"></div>
       <div class="field"><label>Full Address</label><input id="cu_addr" value="${c?esc(c.address||''):''}"></div>
       <div class="field"><label>Contact Number</label><input id="cu_phone" value="${c?esc(c.phone||''):''}"></div>
-      <div class="field"><label>Category / Type</label><input id="cu_cat" value="${c?esc(c.category||''):''}"></div>
+      <div class="field"><label>Category / Type</label><select id="cu_cat">${CATS.map(x=>`<option value="${esc(x)}" ${c&&c.category===x?'selected':''}>${x||'Select category…'}</option>`).join('')}</select></div>
       <div class="field"><label>Approved Discount %</label><input id="cu_disc" type="number" step="0.1" value="${c?c.discount_pct:0}"></div>
-      <div class="field"><label>Assigned Booker</label><select id="cu_booker"><option value="">— none —</option>${bookers.map(b=>`<option value="${b.id}" ${c&&c.booker_id===b.id?'selected':''}>${esc(b.name)} (${esc(b.company_id?b.name:'')})</option>`).join('')}</select></div>
+      <div class="field"><label>Assigned Booker</label><select id="cu_booker"><option value="">— none —</option>${bookers.map(b=>`<option value="${b.id}" ${c&&c.booker_id===b.id?'selected':''}>${esc(b.name)}</option>`).join('')}</select></div>
     </div>
     <div class="field" style="margin-top:12px"><label>Assign to Companies (invoice visibility per company)</label>
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px">

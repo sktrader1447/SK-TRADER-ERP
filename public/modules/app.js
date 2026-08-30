@@ -12,6 +12,7 @@ import { viewReports } from './reports.js';
 import { viewPeople, viewPermissions } from './people.js';
 import { viewTemplate } from './templatePage.js';
 import { viewUsers } from './users.js';
+import { viewCompanies } from './companies.js';
 
 const navGroups = [
   { label: 'Business', items: [
@@ -32,6 +33,7 @@ const navGroups = [
   { label: 'Admin', items: [
     { id: 'reports', icon: '📊', label: 'Reports' },
     { id: 'template', icon: '🎨', label: 'Invoice Template' },
+    { id: 'companies', icon: '🏢', label: 'Companies' },
     { id: 'users', icon: '👤', label: 'Users & Access' },
     { id: 'people', icon: '🧑‍💼', label: 'People' },
     { id: 'permissions', icon: '🔐', label: 'Permissions' },
@@ -54,9 +56,23 @@ function renderNav() {
     ${g.items.map(i => `<button class="${current===i.id?'active':''}" onclick="window.__nav('${i.id}')">
       <span class="ic">${i.icon}</span><span>${i.label}</span></button>`).join('')}
   `).join('');
-  document.getElementById('companyChip').textContent = state.company_id ? (state.members.find(m=>m.company_id===state.company_id)?.company_name || 'Company') : 'All Companies';
+  // global company selector in topbar
+  const chip = document.getElementById('companyChip');
+  const members = state.members || [];
+  if (members.length > 1) {
+    chip.innerHTML = `<select id="gloCompany" onchange="window.__setCompany(this.value)" style="font-size:12px;padding:4px 8px;border-radius:7px;border:1px solid var(--line)">${members.map(m=>`<option value="${m.company_id}" ${m.company_id===state.company_id?'selected':''}>${esc(m.company_name)}</option>`).join('')}</select>`;
+  } else if (members.length === 1) {
+    chip.textContent = members[0].company_name;
+  } else {
+    chip.textContent = 'All Companies';
+  }
   document.getElementById('userChip').textContent = state.user ? state.user.full_name : '';
 }
+
+window.__setCompany = (v) => {
+  state.company_id = +v;
+  navigate(current);
+};
 
 const views = {
   dashboard: viewDashboard,
@@ -72,6 +88,7 @@ const views = {
   profitability: () => import('./common.js').then(m => m.viewProfitability()),
   reports: viewReports,
   template: viewTemplate,
+  companies: viewCompanies,
   users: viewUsers,
   people: viewPeople,
   permissions: viewPermissions,
@@ -95,19 +112,42 @@ async function renderPage() {
 }
 
 async function boot() {
-  // try to login as owner for demo if not authenticated
+  window.__nav = (id) => navigate(id);
+  // Always render the menu first so the app is never a blank screen.
+  renderNav();
+  let bootErr = null;
   try {
     await refreshState();
   } catch (e) {
+    // Not authenticated yet -> try the demo accounts, then refresh again.
+    let ok = false;
     const creds = [['owner','owner123'],['acc','acc123'],['mgr','mgr123'],['staff','staff123']];
     for (const [u,p] of creds) {
-      const r = await fetch('/api/login', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({username:u,password:p}) });
-      if (r.ok) break;
+      try {
+        const r = await fetch('/api/login', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({username:u,password:p}) });
+        if (r.ok) { ok = true; break; }
+      } catch (_) { /* network error */ }
     }
-    await refreshState();
+    try {
+      await refreshState();
+    } catch (err) {
+      bootErr = err;
+    }
   }
-  window.__nav = (id) => navigate(id);
+  // Update header labels from whatever state we have.
   renderNav();
+  if (bootErr) {
+    const el = document.getElementById('content');
+    el.innerHTML = `<div class="panel" style="max-width:560px;margin:40px auto">
+      <div class="head">⚠️ Backend se connect nahi ho sakta</div>
+      <div style="padding:16px;line-height:1.7;font-size:14px">
+        Menu tayyar hai, lekin server ka <code>/api</code> jawab nahi de raha.
+        Ye aksar hosting par <code>better-sqlite3</code> (native module) sahi install na hone se hota hai.
+        <br><br><b>Kya karein:</b> Hosting ke <b>Logs</b> me dekhein — wahan asal error milega (mujhe bhejo to fix kar sakta hoon).
+        <br><br>Error: <code>${esc(bootErr.message || bootErr)}</code>
+      </div></div>`;
+    return;
+  }
   renderPage();
 }
 

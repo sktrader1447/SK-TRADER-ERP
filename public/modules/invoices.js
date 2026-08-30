@@ -4,7 +4,9 @@ import { navigate, toast } from './app.js';
 let products = [];
 let customers = [];
 let accounts = [];
+let bookers = [];
 let nextNo = '';
+function bookerOpts() { return bookers.map(b=>`<option value="${b.id}">${esc(b.name)}</option>`).join(''); }
 let invTemplate = {};
 let invCompany = {};
 let invLogo = null;
@@ -110,7 +112,9 @@ async function showForm(isOld) {
   const prods = await api(`/products?company_id=${co}`);
   const custs = (await api(`/customers?company_id=${co}`)).filter(c => c.is_active);
   const accs = await api('/accounts');
-  products = prods; customers = custs; accounts = accs;
+  const bks = await api(`/bookers?company_id=${co}`);
+  products = prods; customers = custs; accounts = accs; bookers = bks;
+  window.__bookerOpts = () => bookers.map(b=>`<option value="${b.id}">${esc(b.name)}</option>`).join('');
   try { invTemplate = await api('/invoice-template'); } catch(e){ invTemplate = {}; }
   try {
     const comps = await api('/companies');
@@ -133,12 +137,14 @@ async function showForm(isOld) {
       <div class="grid" style="margin-top:12px">
         <div class="field"><label>Opening Balance Amount (net)</label><input id="old_amount" type="number" step="0.01" placeholder="0.00"></div>
         <div class="field"><label>Discount Amount</label><input id="old_disc" type="number" step="0.01" placeholder="0.00"></div>
+        <div class="field"><label>Booker / Rep</label><select id="old_booker"><option value="">— none —</option>${bookers.length?bookerOpts():''}</select></div>
         <div class="field" style="grid-column:1/-1"><label>Opening-Balance Notes</label><textarea id="old_note" rows="2"></textarea></div>
       </div>
       <div style="margin-top:14px;text-align:right"><button class="btn" onclick="window.__saveOldBill()">Save Opening Balance</button></div>
     `:`
       <div style="margin-top:14px">
-        <div class="field"><label>Items — Tab on last row adds a new line; use ↓↑ to pick product</label></div>
+        <div class="field"><label>Items — type to search product (name/SKU); Tab moves to next column and adds a new line only after the last column</label></div>
+        <datalist id="prodlist">${prods.map(p=>`<option value="${esc(p.name + ' (' + p.sku + ')')}"></option>`).join('')}</datalist>
         <div id="items"></div>
       </div>
       <div class="grid" style="margin-top:14px;grid-template-columns:repeat(auto-fit,minmax(160px,1fr))">
@@ -197,6 +203,7 @@ async function showForm(isOld) {
       try {
         await api('/invoices', { method:'POST', body: {
           company_id: state.company_id, customer_id: cid, invoice_date: document.getElementById('inv_date').value,
+          booker_id: +document.getElementById('old_booker').value || null,
           is_old_bill: true, opening_balance_note: document.getElementById('old_note').value,
           invoice_no: document.getElementById('inv_no').value || undefined,
         }});
@@ -241,19 +248,30 @@ function addRow(initial) {
   qty.addEventListener('input', recalc);
   rate.addEventListener('input', recalc);
   typ.addEventListener('change', recalc);
-  // Tab on last row creates new row
-  [...r.querySelectorAll('input,select')].forEach(el => el.addEventListener('keydown', (e) => {
-    if (e.key === 'Tab' && r === box.lastElementChild) {
-      setTimeout(() => { addRow(); box.lastElementChild.querySelector('.row-prod').focus(); }, 0);
+  // New row ONLY when Tab from the last column (remove button) of the last row.
+  // Tab otherwise moves to the next column normally (product -> qty -> rate -> type).
+  const rm = r.querySelector('button.btn.danger');
+  rm.addEventListener('keydown', (e) => {
+    if (e.key === 'Tab' && !e.shiftKey && r === box.lastElementChild) {
+      e.preventDefault();
+      addRow();
+      box.lastElementChild.querySelector('.row-prod').focus();
     }
-  }));
+  });
   recalc();
 }
 
 function rateRate(p, custDisc) {
-  // default from customer category-specific price; salon for salon customers
-  const cat = document.getElementById('inv_cust')?.selectedOptions[0]?.text || '';
-  return p.salon_rate || p.retail_rate || p.online_rate || 0;
+  // pick price by customer category (Retail/Salon/Daraz/Online) so the category drives pricing everywhere
+  const sel = document.getElementById('inv_cust');
+  const opt = sel && sel.selectedOptions[0];
+  const cid = opt ? (+opt.value) : null;
+  const cust = customers.find(x => x.id === cid);
+  const cat = (cust && cust.category) || '';
+  if (/salon/i.test(cat)) return p.salon_rate || p.retail_rate || 0;
+  if (/online|daraz/i.test(cat)) return p.online_rate || p.retail_rate || 0;
+  if (/retail|wholesale/i.test(cat)) return p.retail_rate || p.online_rate || p.salon_rate || 0;
+  return p.retail_rate || p.online_rate || p.salon_rate || 0;
 }
 
 function pickProduct(e, input) {
@@ -288,7 +306,7 @@ function recalc() {
 }
 
 // Build the on-screen invoice preview mirroring the branded PDF template.
-function renderTemplatePreview({ lines, cust, subtotal, discPct, discAmt, deliv, net, invoice_no, date }) {
+function renderTemplatePreview({ lines, cust, subtotal, discPct, discAmt, deliv, net, invoice_no, date, payAccounts = [] }) {
   const t = invTemplate || {};
   const co = invCompany || {};
   const T = (k, d) => (t[k] !== undefined && t[k] !== '' ? t[k] : d);
@@ -308,6 +326,7 @@ function renderTemplatePreview({ lines, cust, subtotal, discPct, discAmt, deliv,
     if (t.account_bank) accLines.push(`<div>${esc(t.account_bank_name||'Bank')} : ${esc(t.account_title||'')}  ${esc(t.account_iban||'')}</div>`);
     if (t.account_easypaisa) accLines.push(`<div>EASYPAISA : ${esc(t.account_easypaisa)}</div>`);
   }
+  const payLine = payAccounts.length ? `<div style="margin-top:8px;padding:10px;background:#fff7ed;border:1px solid #fdba74;border-radius:6px;font-size:10.5px;color:#9a3412">PAYMENT ACCOUNT(S)<br>${payAccounts.map(a=>`<div>• ${esc(a)}</div>`).join('')}</div>` : '';
   const words = amountInWords(net, currency);
   return `
   <div style="border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#fff;font-family:'Segoe UI',Arial,sans-serif;color:#111827">
@@ -337,6 +356,7 @@ function renderTemplatePreview({ lines, cust, subtotal, discPct, discAmt, deliv,
         ${t.show_terms !== false?`<div>Terms : ${esc(T('default_terms','CASH'))}</div>`:''}
         ${t.show_rep !== false && cust.booker?.name?`<div>Rep : ${esc(cust.booker.name)}</div>`:''}
         ${accLines.length?`<div style="margin-top:8px;padding:10px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;font-size:10.5px;color:#374151">ACCOUNT DETAILS<br>${accLines.join('')}</div>`:''}
+        ${payLine}
       </div>
     </div>
     <div style="padding:0 20px">
@@ -393,6 +413,7 @@ async function preview() {
   const acc2 = +document.getElementById('acc2').value || null;
   const acc1o = accounts.find(a => a.id === acc1);
   const acc2o = accounts.find(a => a.id === acc2);
+  const payAccounts = [acc1o, acc2o].filter(Boolean).map(a => a.name + ' (' + a.type + ')');
   const subtotal = +document.getElementById('subtotal').value;
   const discPct = +document.getElementById('disc_pct').value || 0;
   const discAmt = +document.getElementById('disc_amt').value;
@@ -405,11 +426,11 @@ async function preview() {
   openModal('Preview — Invoice Template', `
       <div style="margin-bottom:14px;display:flex;gap:6px;flex-wrap:wrap">
         <button class="btn ok" onclick="window.__confirmSave()">✓ Confirm & Save</button>
-        <button class="btn ghost" onclick="window.__downloadDraft()">Download PDF</button>
         <button class="btn" onclick="window.__backForm()">← Edit</button>
+        <div style="width:100%;font-size:12px;color:var(--mut);margin-top:4px">PDF ise save karne ke baad detail page ke "Download PDF" se milega.</div>
       </div>
       ${renderTemplatePreview({ lines, cust, subtotal, discPct, discAmt, deliv, net,
-        invoice_no: window.__previewData.invoice_no || nextNo, date: window.__previewData.invoice_date })}`, true);
+        invoice_no: window.__previewData.invoice_no || nextNo, date: window.__previewData.invoice_date, payAccounts })}`, true);
 
   window.__confirmSave = async () => {
     try {
@@ -418,8 +439,7 @@ async function preview() {
     } catch(e){ toast(e.message, true); }
   };
   window.__downloadDraft = async () => {
-    window.open(`/api/next-invoice-number?company_id=${state.company_id}`, '_blank');
-    toast('Draft PDF requires a saved invoice — confirm to save first');
+    toast('Draft PDF requires a saved invoice — confirm to save first, then use Download PDF');
   };
   window.__backForm = () => showForm(false);
 }
