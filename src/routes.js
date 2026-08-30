@@ -127,15 +127,52 @@ export function buildRouter(db) {
   r.post('/companies/:id', requirePermission('edit'), (req, res) => {
     const c = db.prepare('SELECT * FROM companies WHERE id=?').get(req.params.id);
     if (!c) return res.status(404).json({ error: 'Not found' });
-    const { name, address, phone, email, partner_name, profit_margin_pct } = req.body;
+    const { name, code, address, phone, email, partner_name, profit_margin_pct } = req.body;
     const margin = Number(profit_margin_pct ?? c.profit_margin_pct);
     if (margin < 0) return res.status(400).json({ error: 'Margin cannot be negative' });
-    db.prepare(`UPDATE companies SET name=?, address=?, phone=?, email=?, partner_name=?, profit_margin_pct=? WHERE id=?`)
-      .run(name || c.name, address ?? c.address, phone ?? c.phone, email ?? c.email, partner_name ?? c.partner_name, margin, c.id);
+    db.prepare(`UPDATE companies SET name=?, code=?, address=?, phone=?, email=?, partner_name=?, profit_margin_pct=? WHERE id=?`)
+      .run(name || c.name, code ?? c.code, address ?? c.address, phone ?? c.phone, email ?? c.email, partner_name ?? c.partner_name, margin, c.id);
     const changes = [];
     if (String(partner_name ?? c.partner_name) !== String(c.partner_name)) changes.push(`partner ${c.partner_name}->${partner_name ?? c.partner_name}`);
     if (Number(profit_margin_pct ?? c.profit_margin_pct) !== c.profit_margin_pct) changes.push(`margin ${c.profit_margin_pct}%->${margin}%`);
     if (changes.length) audit(db, req, 'COMPANY_UPDATE', 'company', c.id, changes.join(', '), c.id);
+    res.json({ ok: true });
+  });
+
+  // hard delete a company and all its scoped data (to remove dummy seed data)
+  r.post('/companies/:id/delete', requirePermission('delete'), (req, res) => {
+    const c = db.prepare('SELECT * FROM companies WHERE id=?').get(req.params.id);
+    if (!c) return res.status(404).json({ error: 'Not found' });
+    const del = db.transaction(() => {
+      // invoice lines + returns via sales invoices
+      db.prepare(`DELETE FROM sale_return_lines WHERE return_id IN (SELECT id FROM sale_returns WHERE invoice_id IN (SELECT id FROM sales_invoices WHERE company_id=?))`).run(c.id);
+      db.prepare(`DELETE FROM sale_returns WHERE invoice_id IN (SELECT id FROM sales_invoices WHERE company_id=?)`).run(c.id);
+      db.prepare(`DELETE FROM invoice_lines WHERE invoice_id IN (SELECT id FROM sales_invoices WHERE company_id=?)`).run(c.id);
+      db.prepare(`DELETE FROM cheques WHERE company_id=?`).run(c.id);
+      db.prepare(`DELETE FROM payments WHERE company_id=?`).run(c.id);
+      db.prepare(`DELETE FROM recovery WHERE company_id=?`).run(c.id);
+      db.prepare(`DELETE FROM sales_invoices WHERE company_id=?`).run(c.id);
+      db.prepare(`DELETE FROM inventory_movements WHERE company_id=?`).run(c.id);
+      db.prepare(`DELETE FROM products WHERE company_id=?`).run(c.id);
+      db.prepare(`DELETE FROM bookers WHERE company_id=?`).run(c.id);
+      db.prepare(`DELETE FROM ledger_transactions WHERE company_id=?`).run(c.id);
+      db.prepare(`DELETE FROM expense_allocations WHERE company_id=?`).run(c.id);
+      db.prepare(`DELETE FROM allocation_plan_items WHERE company_id=?`).run(c.id);
+      db.prepare(`DELETE FROM user_permissions WHERE company_id=?`).run(c.id);
+      db.prepare(`DELETE FROM company_memberships WHERE company_id=?`).run(c.id);
+      // customers that belong ONLY to this company
+      const only = db.prepare(`SELECT id FROM customers WHERE id IN (SELECT customer_id FROM customer_companies WHERE company_id=?)
+        AND id NOT IN (SELECT customer_id FROM customer_companies WHERE company_id<>?)`).all(c.id, c.id);
+      for (const row of only) {
+        db.prepare('DELETE FROM customer_companies WHERE customer_id=?').run(row.id);
+        db.prepare('DELETE FROM customers WHERE id=?').run(row.id);
+      }
+      // remove this company from multi-company customer mappings
+      db.prepare('DELETE FROM customer_companies WHERE company_id=?').run(c.id);
+      db.prepare('DELETE FROM companies WHERE id=?').run(c.id);
+    });
+    del();
+    audit(db, req, 'COMPANY_DELETE', 'company', c.id, c.name, null);
     res.json({ ok: true });
   });
 
